@@ -1057,6 +1057,26 @@ impl Config {
         names
     }
 
+    pub fn list_files(filter: &str, limit_num: i32) -> Vec<String> {
+        match std::fs::read_dir(".") {
+            Ok(entries) => {
+                let mut files = Vec::new();
+                for entry in entries.flatten() {
+                    if let Ok(file_name) = entry.file_name().into_string() {
+                        if file_name.contains(filter) {
+                            files.push(entry.path().to_str().unwrap().to_string());
+                            if limit_num > 0 && files.len() >= limit_num as usize {
+                                break;
+                            }
+                        }
+                    }
+                }
+                files
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn has_role(name: &str) -> bool {
         let names = Self::list_roles(true);
         names.contains(&name.to_string())
@@ -1792,6 +1812,17 @@ impl Config {
                 ".delete" => {
                     map_completion_values(vec!["role", "session", "rag", "macro", "agent-data"])
                 }
+                ".file" => Self::list_files(filter, 10)
+                    .iter()
+                    .map(|v| {
+                        let file_name = Path::new(v)
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string();
+                        (file_name, Some(v.to_string()))
+                    })
+                    .collect(),
                 _ => vec![],
             };
         } else if cmd == ".set" && args.len() == 2 {
