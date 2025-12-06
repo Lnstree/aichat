@@ -12,10 +12,9 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use dirs::home_dir;
+use std::sync::LazyLock;
 
-lazy_static::lazy_static! {
-    pub static ref SHELL: Shell = detect_shell();
-}
+pub static SHELL: LazyLock<Shell> = LazyLock::new(detect_shell);
 
 pub struct Shell {
     pub name: String,
@@ -176,7 +175,7 @@ pub fn append_to_shell_history(shell: &str, command: &str, exit_code: i32) -> io
             .create(true)
             .append(true)
             .open(&history_file)?;
-        writeln!(file, "{}", history_txt)?;
+        writeln!(file, "{history_txt}")?;
     }
     Ok(())
 }

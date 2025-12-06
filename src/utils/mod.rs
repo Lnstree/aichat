@@ -3,6 +3,7 @@ mod clipboard;
 mod command;
 mod crypto;
 mod html_to_md;
+mod input;
 mod loader;
 mod path;
 mod render_prompt;
@@ -15,6 +16,7 @@ pub use self::clipboard::set_text;
 pub use self::command::*;
 pub use self::crypto::*;
 pub use self::html_to_md::*;
+pub use self::input::*;
 pub use self::loader::*;
 pub use self::path::*;
 pub use self::render_prompt::render_prompt;
@@ -27,15 +29,22 @@ use fancy_regex::Regex;
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use is_terminal::IsTerminal;
 use std::borrow::Cow;
+use std::sync::LazyLock;
 use std::{env, path::PathBuf, process};
 use unicode_segmentation::UnicodeSegmentation;
 
-lazy_static::lazy_static! {
-    pub static ref CODE_BLOCK_RE: Regex = Regex::new(r"(?ms)```\w*(.*)```").unwrap();
-    pub static ref THINK_TAG_RE: Regex = Regex::new(r"(?s)^\s*<think>.*?</think>(\s*|$)").unwrap();
-    pub static ref IS_STDOUT_TERMINAL: bool = std::io::stdout().is_terminal();
-    pub static ref NO_COLOR: bool = env::var("NO_COLOR").ok().and_then(|v| parse_bool(&v)).unwrap_or_default() || !*IS_STDOUT_TERMINAL;
-}
+pub static CODE_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?ms)```\w*(.*)```").unwrap());
+pub static THINK_TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)^\s*<think>.*?</think>(\s*|$)").unwrap());
+pub static IS_STDOUT_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stdout().is_terminal());
+pub static NO_COLOR: LazyLock<bool> = LazyLock::new(|| {
+    env::var("NO_COLOR")
+        .ok()
+        .and_then(|v| parse_bool(&v))
+        .unwrap_or_default()
+        || !*IS_STDOUT_TERMINAL
+});
 
 pub fn now() -> String {
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
@@ -79,25 +88,7 @@ pub fn estimate_token_length(text: &str) -> usize {
     output.ceil() as usize
 }
 
-pub fn light_theme_from_colorfgbg(colorfgbg: &str) -> Option<bool> {
-    let parts: Vec<_> = colorfgbg.split(';').collect();
-    let bg = match parts.len() {
-        2 => &parts[1],
-        3 => &parts[2],
-        _ => {
-            return None;
-        }
-    };
-    let bg = bg.parse::<u8>().ok()?;
-    let (r, g, b) = ansi_colours::rgb_from_ansi256(bg);
-
-    let v = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
-
-    let light = v > 128.0;
-    Some(light)
-}
-
-pub fn strip_think_tag(text: &str) -> Cow<str> {
+pub fn strip_think_tag(text: &str) -> Cow<'_, str> {
     THINK_TAG_RE.replace_all(text, "")
 }
 
@@ -155,7 +146,7 @@ pub fn indent_text<T: ToString>(s: T, size: usize) -> String {
     let indent_str = " ".repeat(size);
     s.to_string()
         .split('\n')
-        .map(|line| format!("{}{}", indent_str, line))
+        .map(|line| format!("{indent_str}{line}"))
         .collect::<Vec<String>>()
         .join("\n")
 }
@@ -223,6 +214,11 @@ pub fn set_proxy(
             .proxy(reqwest::Proxy::all(proxy).with_context(|| format!("Invalid proxy `{proxy}`"))?);
     };
     Ok(builder)
+}
+
+pub fn decode_bin<T: serde::de::DeserializeOwned>(data: &[u8]) -> Result<T> {
+    let (v, _) = bincode::serde::decode_from_slice(data, bincode::config::legacy())?;
+    Ok(v)
 }
 
 #[cfg(test)]

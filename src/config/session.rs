@@ -12,10 +12,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs::{read_to_string, write};
 use std::path::Path;
+use std::sync::LazyLock;
 
-lazy_static::lazy_static! {
-    static ref RE_AUTONAME_PREFIX: Regex = Regex::new(r"\d{8}T\d{6}-").unwrap();
-}
+static RE_AUTONAME_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{8}T\d{6}-").unwrap());
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Session {
@@ -61,6 +60,8 @@ pub struct Session {
     compressing: bool,
     #[serde(skip)]
     autoname: Option<AutoName>,
+    #[serde(skip)]
+    tokens: usize,
 }
 
 impl Session {
@@ -80,7 +81,7 @@ impl Session {
         let content = read_to_string(path)
             .with_context(|| format!("Failed to load session {} at {}", name, path.display()))?;
         let mut session: Self =
-            serde_yaml::from_str(&content).with_context(|| format!("Invalid session {}", name))?;
+            serde_yaml::from_str(&content).with_context(|| format!("Invalid session {name}"))?;
 
         session.model = Model::retrieve_model(config, &session.model_id, ModelType::Chat)?;
 
@@ -100,6 +101,8 @@ impl Session {
                 session.role_prompt = role.prompt().to_string();
             }
         }
+
+        session.update_tokens();
 
         Ok(session)
     }
@@ -125,7 +128,11 @@ impl Session {
     }
 
     pub fn tokens(&self) -> usize {
-        self.model().total_tokens(&self.messages)
+        self.tokens
+    }
+
+    pub fn update_tokens(&mut self) {
+        self.tokens = self.model().total_tokens(&self.messages);
     }
 
     pub fn has_user_messages(&self) -> bool {
@@ -159,7 +166,7 @@ impl Session {
             data["max_input_tokens"] = max_input_tokens.into();
         }
         if percent != 0.0 {
-            data["total/max"] = format!("{}%", percent).into();
+            data["total/max"] = format!("{percent}%").into();
         }
         data["messages"] = json!(self.messages);
 
@@ -269,6 +276,7 @@ impl Session {
         self.role_name = convert_option_string(role.name());
         self.role_prompt = role.prompt().to_string();
         self.dirty = true;
+        self.update_tokens();
     }
 
     pub fn clear_role(&mut self) {
@@ -346,6 +354,7 @@ impl Session {
             MessageContent::Text(prompt),
         ));
         self.dirty = true;
+        self.update_tokens();
     }
 
     pub fn need_autoname(&self) -> bool {
@@ -495,6 +504,7 @@ impl Session {
             ));
         }
         self.dirty = true;
+        self.update_tokens();
         Ok(())
     }
 
@@ -504,6 +514,7 @@ impl Session {
         self.data_urls.clear();
         self.autoname = None;
         self.dirty = true;
+        self.update_tokens();
     }
 
     pub fn echo_messages(&self, input: &Input) -> String {
@@ -516,7 +527,13 @@ impl Session {
         if input.continue_output().is_some() {
             return messages;
         } else if input.regenerate() {
-            messages.pop();
+            while let Some(last) = messages.last() {
+                if !last.role.is_user() {
+                    messages.pop();
+                } else {
+                    break;
+                }
+            }
             return messages;
         }
         let mut need_add_msg = true;
@@ -552,10 +569,6 @@ impl RoleLike for Session {
         &self.model
     }
 
-    fn model_mut(&mut self) -> &mut Model {
-        &mut self.model
-    }
-
     fn temperature(&self) -> Option<f64> {
         self.temperature
     }
@@ -568,11 +581,12 @@ impl RoleLike for Session {
         self.use_tools.clone()
     }
 
-    fn set_model(&mut self, model: &Model) {
+    fn set_model(&mut self, model: Model) {
         if self.model().id() != model.id() {
             self.model_id = model.id();
-            self.model = model.clone();
+            self.model = model;
             self.dirty = true;
+            self.update_tokens();
         }
     }
 

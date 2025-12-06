@@ -17,32 +17,39 @@ use crate::utils::{
 };
 
 use anyhow::{bail, Context, Result};
+use crossterm::cursor::SetCursorStyle;
 use fancy_regex::Regex;
+use reedline::CursorConfig;
 use reedline::{
     default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
     ColumnarMenu, EditCommand, EditMode, Emacs, KeyCode, KeyModifiers, Keybindings, Reedline,
     ReedlineEvent, ReedlineMenu, ValidationResult, Validator, Vi,
 };
 use reedline::{MenuBuilder, Signal};
+use std::sync::LazyLock;
 use std::{env, process};
 
 const MENU_NAME: &str = "completion_menu";
 
-lazy_static::lazy_static! {
-    static ref REPL_COMMANDS: [ReplCommand; 36] = [
+static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
+    [
         ReplCommand::new(".help", "Show this help guide", AssertState::pass()),
         ReplCommand::new(".info", "Show system info", AssertState::pass()),
-        ReplCommand::new(".edit config", "Modify configuration file", AssertState::False(StateFlags::AGENT)),
+        ReplCommand::new(
+            ".edit config",
+            "Modify configuration file",
+            AssertState::False(StateFlags::AGENT),
+        ),
         ReplCommand::new(".model", "Switch LLM model", AssertState::pass()),
         ReplCommand::new(
             ".prompt",
             "Set a temporary role using a prompt",
-            AssertState::False(StateFlags::SESSION | StateFlags::AGENT)
+            AssertState::False(StateFlags::SESSION | StateFlags::AGENT),
         ),
         ReplCommand::new(
             ".role",
             "Create or switch to a role",
-            AssertState::False(StateFlags::SESSION | StateFlags::AGENT)
+            AssertState::False(StateFlags::SESSION | StateFlags::AGENT),
         ),
         ReplCommand::new(
             ".info role",
@@ -57,7 +64,10 @@ lazy_static::lazy_static! {
         ReplCommand::new(
             ".save role",
             "Save current role to file",
-            AssertState::TrueFalse(StateFlags::ROLE, StateFlags::SESSION_EMPTY | StateFlags::SESSION),
+            AssertState::TrueFalse(
+                StateFlags::ROLE,
+                StateFlags::SESSION_EMPTY | StateFlags::SESSION,
+            ),
         ),
         ReplCommand::new(
             ".exit role",
@@ -72,12 +82,12 @@ lazy_static::lazy_static! {
         ReplCommand::new(
             ".empty session",
             "Clear session messages",
-            AssertState::True(StateFlags::SESSION)
+            AssertState::True(StateFlags::SESSION),
         ),
         ReplCommand::new(
             ".compress session",
             "Compress session messages",
-            AssertState::True(StateFlags::SESSION)
+            AssertState::True(StateFlags::SESSION),
         ),
         ReplCommand::new(
             ".info session",
@@ -87,23 +97,23 @@ lazy_static::lazy_static! {
         ReplCommand::new(
             ".edit session",
             "Modify current session",
-            AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION)
+            AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
         ReplCommand::new(
             ".save session",
             "Save current session to file",
-            AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION)
+            AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
         ReplCommand::new(
             ".exit session",
             "Exit active session",
-            AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION)
+            AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
         ReplCommand::new(".agent", "Use an agent", AssertState::bare()),
         ReplCommand::new(
             ".starter",
             "Use a conversation starter",
-            AssertState::True(StateFlags::AGENT)
+            AssertState::True(StateFlags::AGENT),
         ),
         ReplCommand::new(
             ".edit agent-config",
@@ -118,12 +128,12 @@ lazy_static::lazy_static! {
         ReplCommand::new(
             ".exit agent",
             "Leave agent",
-            AssertState::True(StateFlags::AGENT)
+            AssertState::True(StateFlags::AGENT),
         ),
         ReplCommand::new(
             ".rag",
             "Initialize or access RAG",
-            AssertState::False(StateFlags::AGENT)
+            AssertState::False(StateFlags::AGENT),
         ),
         ReplCommand::new(
             ".edit rag-docs",
@@ -150,30 +160,35 @@ lazy_static::lazy_static! {
             "Leave RAG",
             AssertState::TrueFalse(StateFlags::RAG, StateFlags::AGENT),
         ),
-        ReplCommand::new(
-            ".macro",
-            "Execute a macro",
-            AssertState::pass()
-        ),
+        ReplCommand::new(".macro", "Execute a macro", AssertState::pass()),
         ReplCommand::new(
             ".file",
             "Include files, directories, URLs or commands",
-            AssertState::pass()
+            AssertState::pass(),
         ),
-        ReplCommand::new(".continue", "Continue previous response", AssertState::pass()),
+        ReplCommand::new(
+            ".continue",
+            "Continue previous response",
+            AssertState::pass(),
+        ),
         ReplCommand::new(
             ".regenerate",
             "Regenerate last response",
-            AssertState::pass()
+            AssertState::pass(),
         ),
         ReplCommand::new(".copy", "Copy last response", AssertState::pass()),
         ReplCommand::new(".set", "Modify runtime settings", AssertState::pass()),
-        ReplCommand::new(".delete", "Delete roles, sessions, RAGs, or agents", AssertState::pass()),
+        ReplCommand::new(
+            ".delete",
+            "Delete roles, sessions, RAGs, or agents",
+            AssertState::pass(),
+        ),
         ReplCommand::new(".exit", "Exit REPL", AssertState::pass()),
-    ];
-    static ref COMMAND_RE: Regex = Regex::new(r"^\s*(\.\S*)\s*").unwrap();
-    static ref MULTILINE_RE: Regex = Regex::new(r"(?s)^\s*:::\s*(.*)\s*:::\s*$").unwrap();
-}
+    ]
+});
+static COMMAND_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(\.\S*)\s*").unwrap());
+static MULTILINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)^\s*:::\s*(.*)\s*:::\s*$").unwrap());
 
 pub struct Repl {
     config: GlobalConfig,
@@ -250,11 +265,17 @@ Type ".help" for additional help.
         let highlighter = ReplHighlighter::new(config);
         let menu = Self::create_menu();
         let edit_mode = Self::create_edit_mode(config);
+        let cursor_config = CursorConfig {
+            vi_insert: Some(SetCursorStyle::BlinkingBar),
+            vi_normal: Some(SetCursorStyle::SteadyBlock),
+            emacs: None,
+        };
         let mut editor = Reedline::create()
             .with_completer(Box::new(completer))
             .with_highlighter(Box::new(highlighter))
             .with_menu(menu)
             .with_edit_mode(edit_mode)
+            .with_cursor_config(cursor_config)
             .with_quick_completions(true)
             .with_partial_completions(true)
             .use_bracketed_paste(true)
@@ -289,15 +310,18 @@ Type ".help" for additional help.
             KeyCode::Enter,
             ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
         );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('j'),
+            ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
+        );
     }
 
     fn create_edit_mode(config: &GlobalConfig) -> Box<dyn EditMode> {
         let edit_mode: Box<dyn EditMode> = if config.read().keybindings == "vi" {
-            let mut normal_keybindings = default_vi_normal_keybindings();
             let mut insert_keybindings = default_vi_insert_keybindings();
-            Self::extra_keybindings(&mut normal_keybindings);
             Self::extra_keybindings(&mut insert_keybindings);
-            Box::new(Vi::new(insert_keybindings, normal_keybindings))
+            Box::new(Vi::new(insert_keybindings, default_vi_normal_keybindings()))
         } else {
             let mut keybindings = default_emacs_keybindings();
             Self::extra_keybindings(&mut keybindings);
@@ -365,24 +389,24 @@ pub async fn run_repl_command(
             ".info" => match args {
                 Some("role") => {
                     let info = config.read().role_info()?;
-                    print!("{}", info);
+                    print!("{info}");
                 }
                 Some("session") => {
                     let info = config.read().session_info()?;
-                    print!("{}", info);
+                    print!("{info}");
                 }
                 Some("rag") => {
                     let info = config.read().rag_info()?;
-                    print!("{}", info);
+                    print!("{info}");
                 }
                 Some("agent") => {
                     let info = config.read().agent_info()?;
-                    print!("{}", info);
+                    print!("{info}");
                 }
                 Some(_) => unknown_command()?,
                 None => {
                     let output = config.read().sysinfo()?;
-                    print!("{}", output);
+                    print!("{output}");
                 }
             },
             ".model" => match args {
@@ -466,7 +490,7 @@ pub async fn run_repl_command(
                     }
                     match text {
                         Some(text) => {
-                            println!("{}", dimmed_text(&format!(">> {}", text)));
+                            println!("{}", dimmed_text(&format!(">> {text}")));
                             let input = Input::from_str(config, &text, None);
                             ask(config, abort_signal.clone(), input, true).await?;
                         }
@@ -549,7 +573,7 @@ pub async fn run_repl_command(
             ".sources" => match args {
                 Some("rag") => {
                     let output = Config::rag_sources(config)?;
-                    println!("{}", output);
+                    println!("{output}");
                 }
                 _ => {
                     println!(r#"Usage: .sources rag"#)
@@ -641,7 +665,7 @@ pub async fn run_repl_command(
                     .read()
                     .last_message
                     .as_ref()
-                    .filter(|v| v.continuous && !v.output.is_empty())
+                    .filter(|v| !v.output.is_empty())
                     .map(|v| v.output.clone())
                 {
                     Some(v) => v,

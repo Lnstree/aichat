@@ -8,6 +8,7 @@ use reqwest::Url;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::LazyLock;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -26,28 +27,35 @@ const MAX_CRAWLS: usize = 5;
 const BREAK_ON_ERROR: bool = false;
 const USER_AGENT: &str = "curl/8.6.0";
 
-lazy_static::lazy_static! {
-    static ref CLIENT: Result<reqwest::Client> = {
-        let builder = reqwest::ClientBuilder::new().timeout(Duration::from_secs(16));
-        let client = builder.build()?;
-        Ok(client)
-    };
+static CLIENT: LazyLock<Result<reqwest::Client>> = LazyLock::new(|| {
+    let builder = reqwest::ClientBuilder::new().timeout(Duration::from_secs(16));
+    let client = builder.build()?;
+    Ok(client)
+});
 
-    static ref PRESET: Vec<(Regex, CrawlOptions)> = vec![
+static PRESET: LazyLock<Vec<(Regex, CrawlOptions)>> = LazyLock::new(|| {
+    vec![
         (
             Regex::new(r"github.com/([^/]+)/([^/]+)/tree/([^/]+)").unwrap(),
-            CrawlOptions { exclude: vec!["changelog".into(), "changes".into(), "license".into()], ..Default::default() }
+            CrawlOptions {
+                exclude: vec!["changelog".into(), "changes".into(), "license".into()],
+                ..Default::default()
+            },
         ),
         (
             Regex::new(r"github.com/([^/]+)/([^/]+)/wiki").unwrap(),
-            CrawlOptions { exclude: vec!["_history".into()], extract: Some("#wiki-body".into()), ..Default::default() }
+            CrawlOptions {
+                exclude: vec!["_history".into()],
+                extract: Some("#wiki-body".into()),
+                ..Default::default()
+            },
+        ),
+    ]
+});
 
-        )
-    ];
-
-    static ref EXTENSION_RE: Regex = Regex::new(r"\.[^.]+$").unwrap();
-    static ref GITHUB_REPO_RE: Regex = Regex::new(r"^https://github\.com/([^/]+)/([^/]+)/tree/([^/]+)").unwrap();
-}
+static EXTENSION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[^.]+$").unwrap());
+static GITHUB_REPO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https://github\.com/([^/]+)/([^/]+)/tree/([^/]+)").unwrap());
 
 pub async fn fetch(url: &str) -> Result<String> {
     let client = match *CLIENT {
@@ -123,7 +131,7 @@ pub async fn fetch_with_loaders(
         }
         let image_bytes = res.bytes().await?;
         let image_base64 = base64_encode(&image_bytes);
-        let contents = format!("data:{};base64,{}", content_type, image_base64);
+        let contents = format!("data:{content_type};base64,{image_base64}");
         (contents, extension)
     } else {
         match loaders.get(&extension) {
@@ -308,10 +316,7 @@ async fn crawl_gh_tree(start_url: &Url, exclude: &[String]) -> Result<Vec<String
     let branch = path_segs[4];
     let root_path = path_segs[5..].join("/");
 
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/git/ref/heads/{}",
-        owner, repo, branch
-    );
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{branch}");
 
     let res_body: Value = client
         .get(&url)
@@ -327,10 +332,7 @@ async fn crawl_gh_tree(start_url: &Url, exclude: &[String]) -> Result<Vec<String
         .as_str()
         .ok_or_else(|| anyhow!("Not found branch or tag"))?;
 
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=true",
-        owner, repo, sha
-    );
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/git/trees/{sha}?recursive=true");
 
     let res_body: Value = client
         .get(&url)

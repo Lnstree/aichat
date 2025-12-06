@@ -1,9 +1,8 @@
 use super::*;
 use fancy_regex::{Captures, Regex};
+use std::sync::LazyLock;
 
-lazy_static::lazy_static! {
-    pub static ref RE_VARIABLE: Regex = Regex::new(r"\{\{(\w+)\}\}").unwrap();
-}
+pub static RE_VARIABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{(\w+)\}\}").unwrap());
 pub fn interpolate_variables(text: &mut String) {
     *text = RE_VARIABLE
         .replace_all(text, |caps: &Captures<'_>| {
@@ -26,7 +25,7 @@ pub fn interpolate_variables(text: &mut String) {
                 "__cwd__" => env::current_dir()
                     .map(|v| v.display().to_string())
                     .unwrap_or_default(),
-                _ => format!("{{{{{}}}}}", key),
+                _ => format!("{{{{{key}}}}}"),
             }
         })
         .to_string();
